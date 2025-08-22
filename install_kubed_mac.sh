@@ -30,7 +30,7 @@ OS="darwin"
 ARCH="arm64"
 
 KUBECTL_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl"
-KUBECTL_SHA_URL="https://dl.k8s.io/${VERSION}/bin/${OS}/${ARCH}/kubectl.sha256"
+KUBECTL_SHA_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl.sha256"
 echo "Downloading kubectl..."
 curl -fsSL -o kubectl "$KUBECTL_URL"
 curl -fsSL -o kubectl_sha "$KUBECTL_SHA_URL"
