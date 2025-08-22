@@ -1,4 +1,3 @@
-Here’s a clean `README.md` you can place in your GitHub repo alongside your two installer scripts. It explains what the scripts do, their requirements, and how to run them.
 
 ````markdown
 # Kubernetes & Vault Installer Scripts
