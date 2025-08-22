@@ -1,74 +1,93 @@
-# PowerShell script to install kubectl and HashiCorp Vault for Windows
-
-# Stop on errors
-$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 # --- Config ---
-$KubectlVersion = "v1.30.0"
-$VaultVersion   = "1.16.3"   # change as desired
+$KubectlVersion = 'v1.30.0'
+$VaultVersion   = '1.16.3'
 
 # --- Paths ---
 $HomeDir = $env:USERPROFILE
-$K8sDir  = Join-Path $HomeDir "k8s"
-$VaultZip = Join-Path $HomeDir ("Downloads/vault_{0}_windows_amd64.zip" -f $VaultVersion)
-$VaultSha = Join-Path $HomeDir ("Downloads/vault_{0}_SHA256SUMS" -f $VaultVersion)
+$K8sDir  = Join-Path $HomeDir 'k8s'
+$KubectlPath = Join-Path $K8sDir 'kubectl.exe'
+$VaultZip = Join-Path $env:TEMP ("vault_{0}_windows_amd64.zip" -f $VaultVersion)
+$VaultSha = Join-Path $env:TEMP ("vault_{0}_SHA256SUMS" -f $VaultVersion)
 
-# Ensure k8s dir exists
+function Stop-Here($Message, [int]$Code = 1) {
+  Write-Error $Message
+  exit $Code   # use 'return' instead of 'exit' if you do NOT want to close the host
+}
+
+# Ensure dir exists
 if (-not (Test-Path $K8sDir)) { New-Item -ItemType Directory -Path $K8sDir | Out-Null }
 
-# --- kubectl ---
+# --- kubectl download & verify ---
 Write-Host "Downloading kubectl $KubectlVersion..."
-Invoke-WebRequest -Uri "https://dl.k8s.io/release/$KubectlVersion/bin/windows/amd64/kubectl.exe" -OutFile (Join-Path $K8sDir "kubectl.exe")
-Write-Host "kubectl installed to $K8sDir"
+$kubectlUrl = "https://dl.k8s.io/release/$KubectlVersion/bin/windows/amd64/kubectl.exe"
+$kubectlShaUrl = "$kubectlUrl.sha256"
 
-# --- Vault ---
+try {
+  Invoke-WebRequest -Uri $kubectlUrl -OutFile $KubectlPath -UseBasicParsing
+  $expectedKubectlSha = (Invoke-WebRequest -Uri $kubectlShaUrl -UseBasicParsing).Content.Trim()
+} catch {
+  Stop-Here "Failed to download kubectl or its checksum: $($_.Exception.Message)"
+}
+
+# Compute local SHA256
+$localKubectlSha = (Get-FileHash -Path $KubectlPath -Algorithm SHA256).Hash.ToLower()
+if ($localKubectlSha -ne $expectedKubectlSha.ToLower()) {
+  Remove-Item $KubectlPath -Force -ErrorAction SilentlyContinue
+  Stop-Here "kubectl SHA256 mismatch! expected=$expectedKubectlSha got=$localKubectlSha"
+}
+Write-Host "✅ kubectl checksum verification PASSED"
+
+# --- Vault download & verify ---
 Write-Host "Downloading HashiCorp Vault $VaultVersion..."
 $vaultUrl = "https://releases.hashicorp.com/vault/$VaultVersion/vault_${VaultVersion}_windows_amd64.zip"
 $shaUrl   = "https://releases.hashicorp.com/vault/$VaultVersion/vault_${VaultVersion}_SHA256SUMS"
-Invoke-WebRequest -Uri $vaultUrl -OutFile $VaultZip
-Invoke-WebRequest -Uri $shaUrl -OutFile $VaultSha
 
-# Verify checksum
-Write-Host "Verifying Vault checksum..."
-$expectedHashLine = Get-Content $VaultSha | Where-Object { $_ -match "vault_${VaultVersion}_windows_amd64.zip" }
-if (-not $expectedHashLine) { throw "Checksum line not found for Vault zip" }
-$expectedHash = $expectedHashLine.Split(' ')[0]
-
-$actualHash = (Get-FileHash $VaultZip -Algorithm SHA256).Hash.ToLower()
-if ($expectedHash.ToLower() -ne $actualHash) {
-    throw "Vault checksum verification FAILED. Expected $expectedHash but got $actualHash"
-} else {
-    Write-Host "Vault checksum verification PASSED"
+try {
+  Invoke-WebRequest -Uri $vaultUrl -OutFile $VaultZip -UseBasicParsing
+  Invoke-WebRequest -Uri $shaUrl -OutFile $VaultSha -UseBasicParsing
+} catch {
+  Stop-Here "Failed to download Vault or checksums: $($_.Exception.Message)"
 }
 
-Write-Host "Extracting Vault..."
-Expand-Archive -Path $VaultZip -DestinationPath $K8sDir -Force
-Remove-Item $VaultZip -ErrorAction SilentlyContinue
-Remove-Item $VaultSha -ErrorAction SilentlyContinue
+# Extract expected SHA for the specific zip filename
+$targetFile = "vault_${VaultVersion}_windows_amd64.zip"
+$expectedVaultSha = (Select-String -Path $VaultSha -Pattern "([a-fA-F0-9]{64})\s+\*?$([regex]::Escape($targetFile))").Matches.Value.Split()[0]
+if (-not $expectedVaultSha) { Stop-Here "Could not find expected SHA for $targetFile in SHA256SUMS." }
 
-# --- PATH Update (User) ---
-$pathUser = [Environment]::GetEnvironmentVariable('Path', 'User')
-$pathMachine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+# Compute local SHA and compare
+$localVaultSha = (Get-FileHash -Path $VaultZip -Algorithm SHA256).Hash.ToLower()
+if ($localVaultSha -ne $expectedVaultSha.ToLower()) {
+  Remove-Item $VaultZip -Force -ErrorAction SilentlyContinue
+  Stop-Here "Vault SHA256 mismatch! expected=$expectedVaultSha got=$localVaultSha"
+}
+Write-Host "✅ Vault checksum verification PASSED"
 
-$inUser = ($pathUser -split ';') -contains $K8sDir
-$inMachine = ($pathMachine -split ';') -contains $K8sDir
+# Unzip Vault binary to $K8sDir
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir, $true)
 
-if (-not $inUser -and -not $inMachine) {
-    $newUserPath = if ([string]::IsNullOrWhiteSpace($pathUser)) { $K8sDir } else { $pathUser.TrimEnd(';') + ";" + $K8sDir }
-    [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-    Write-Host "Added $K8sDir to your *User* PATH. New terminals will pick this up."
+# Clean up temp files
+Remove-Item $VaultZip, $VaultSha -Force -ErrorAction SilentlyContinue
+
+# --- PATH (avoid duplicates) ---
+$existingUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($existingUserPath -notmatch [regex]::Escape($K8sDir)) {
+  [Environment]::SetEnvironmentVariable('Path', "$existingUserPath;$K8sDir", 'User')
+  Write-Host "Added $K8sDir to the user PATH. Open a new terminal to pick it up."
 } else {
-    Write-Host "$K8sDir is already on PATH."
+  Write-Host "$K8sDir already on the user PATH."
 }
 
-# Update PATH for current process so this terminal can use the tools immediately
-$env:Path = ($pathMachine + ';' + $pathUser)
+# Make the tools available in the current session immediately
+$env:Path = "$env:Path;$K8sDir"
 
-# --- Verify ---
+# --- Smoke tests (non-fatal) ---
 Write-Host "kubectl version (client):"
-try { & (Join-Path $K8sDir "kubectl.exe") version --client --output=yaml | Select-Object -First 5 | ForEach-Object { $_ } } catch { Write-Warning $_ }
-
+try { & $KubectlPath version --client --output=yaml | Select-Object -First 8 | ForEach-Object { $_ } } catch { Write-Warning $_ }
 Write-Host "vault version:"
-try { & (Join-Path $K8sDir "vault.exe") --version } catch { Write-Warning $_ }
+try { & (Join-Path $K8sDir 'vault.exe') --version } catch { Write-Warning $_ }
 
-Write-Host "Done. If commands aren't found in a *new* terminal, sign out and back in to refresh PATH propagation."
+Write-Host "Done."
