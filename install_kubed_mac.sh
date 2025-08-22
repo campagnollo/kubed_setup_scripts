@@ -25,9 +25,15 @@ mkdir -p "$HOME/k8s"
 cd "$HOME/k8s"
 
 # ---- kubectl (Darwin arm64) ----
-KUBECTL_URL="https://dl.k8s.io/release/v1.33.3/bin/darwin/arm64/kubectl"
+VERSION="v1.33.4"
+OS="darwin"
+ARCH="arm64"
+
+KUBECTL_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl"
+KUBECTL_SHA_URL="https://dl.k8s.io/${VERSION}/bin/${OS}/${ARCH}/kubectl.sha256"
 echo "Downloading kubectl..."
 curl -fsSL -o kubectl "$KUBECTL_URL"
+curl -fsSL -o kubectl_sha "$KUBECTL_SHA_URL"
 chmod +x kubectl
 export PATH="$HOME/k8s:$PATH"
 if ! grep -q 'export PATH="$HOME/k8s:$PATH"' "$HOME/.zshrc" 2>/dev/null; then
