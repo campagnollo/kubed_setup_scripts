@@ -30,13 +30,18 @@ OS="darwin"
 ARCH="arm64"
 
 KUBECTL_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl"
-KUBECTL_SHA_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl.sha256"
+KUBECTL_SHA256_URL="https://dl.k8s.io/release/${VERSION}/bin/${OS}/${ARCH}/kubectl.sha256"
 echo "Downloading kubectl..."
 curl -fsSL -o kubectl "$KUBECTL_URL"
-curl -fsSL -o kubectl.sha "$KUBECTL_SHA_URL"
+curl -fsSL -o kubectl.sha256 "$KUBECTL_SHA256_URL"
 
 echo "Verifying SHA256…"
-echo "$(cat kubectl.sha256)  kubectl" | shasum -a 256 --check -
+if echo "$(cat kubectl.sha256)  kubectl" | shasum -a 256 --check --status -; then
+  echo "Kubectl checksum ok."
+else
+  echo "Kubectl failed checksum. Exiting." >&2
+  exit
+fi
 
 
 chmod +x kubectl
