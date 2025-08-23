@@ -56,11 +56,12 @@ VERSION="1.20.2"
 OS="darwin"
 ARCH="arm64"
 VAULT_ZIP="$HOME/Downloads/vault_1.20.2_darwin_arm64.zip"
+VAULT_256SUMS="$HOME/Downloads/vault_${VERSION}_SHA256SUMS"
 echo "Downloading Vault..."
 curl -fsSL -o "$VAULT_ZIP" "https://releases.hashicorp.com/vault/$VERSION/vault_${VERSION}_${OS}_${ARCH}.zip"
 curl -fsSL -o "$VAULT_256SUMS" "https://releases.hashicorp.com/vault/$VERSION/vault_${VERSION}_SHA256SUMS"
 
-EXPECTED_SHA=$(grep "vault_${VERSION}_${OS}_${ARCH}.zip" "$VAULT_SHA" | awk '{print $1}')
+EXPECTED_SHA=$(grep "vault_${VERSION}_${OS}_${ARCH}.zip" "$VAULT_256SUMS" | awk '{print $1}')
 if echo "${EXPECTED_SHA}  $VAULT_ZIP" | shasum -a 256 --check --status -; then
   echo "Vault checksum ok."
 else
@@ -68,7 +69,7 @@ else
   exit
 fi
 
-itto -xk "$VAULT_ZIP" "$HOME/k8s"
+ditto -xk "$VAULT_ZIP" "$HOME/k8s"
 chmod +x "$HOME/k8s/vault"
 vault version
 
