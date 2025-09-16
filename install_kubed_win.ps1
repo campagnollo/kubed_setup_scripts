@@ -27,7 +27,10 @@ $kubectlShaUrl = "$kubectlUrl.sha256"
 
 try {
   Invoke-WebRequest -Uri $kubectlUrl -OutFile $KubectlPath -UseBasicParsing
-  $expectedKubectlSha = (Invoke-WebRequest -Uri $kubectlShaUrl -UseBasicParsing).Content.Trim()
+
+  # Corrected line: Convert content to string (UTF8) before trimming
+  $expectedKubectlSha = [System.Text.Encoding]::UTF8.GetString((Invoke-WebRequest -Uri $kubectlShaUrl -UseBasicParsing).Content).Trim()
+
 } catch {
   Stop-Here "Failed to download kubectl or its checksum: $($_.Exception.Message)"
 }
