@@ -43,6 +43,22 @@ if ($localKubectlSha -ne $expectedKubectlSha.ToLower()) {
 }
 Write-Host "✅ kubectl checksum verification PASSED"
 
+# Assuming $VaultZip is the path to your zip file and $K8sDir is the destination directory
+# First, ensure the destination directory exists (if not, create it)
+if (-not (Test-Path $K8sDir)) {
+    New-Item -Path $K8sDir -ItemType Directory | Out-Null
+}
+
+# If the intent is to overwrite existing files, delete the directory contents first
+# This replaces the need for an 'overwriteFiles' parameter
+if (Test-Path $K8sDir) {
+    Remove-Item -Path "$K8sDir\*" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Now, extract the zip file.
+# We remove the problematic third argument ($true) and rely on the manual deletion above.
+[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir)
+
 # --- Vault download & verify ---
 Write-Host "Downloading HashiCorp Vault $VaultVersion..."
 $vaultUrl = "https://releases.hashicorp.com/vault/$VaultVersion/vault_${VaultVersion}_windows_amd64.zip"
