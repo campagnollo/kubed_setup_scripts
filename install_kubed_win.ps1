@@ -86,8 +86,7 @@ Write-Host "✅ Vault checksum verification PASSED"
 
 # Unzip Vault binary to $K8sDir
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir, $true)
-
+[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir)
 # Clean up temp files
 Remove-Item $VaultZip, $VaultSha -Force -ErrorAction SilentlyContinue
 
