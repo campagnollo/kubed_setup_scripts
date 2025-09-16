@@ -1,114 +1,135 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+# ------------------- Config -------------------
+$VaultVersion = "1.16.3"                                # set/override if your script already defines it
+$VaultFile    = "vault_${VaultVersion}_windows_amd64.zip"
+$VaultUrl     = "https://releases.hashicorp.com/vault/$VaultVersion/$VaultFile"
 
-# --- Config ---
-$KubectlVersion = 'v1.30.0'
-$VaultVersion   = '1.16.3'
+$TempDir  = $env:TEMP
+$VaultZip = Join-Path $TempDir $VaultFile               # e.g. C:\Users\<you>\AppData\Local\Temp\vault_1.16.3_windows_amd64.zip
+# If you download a .sha256 or have a known hash, set one of these:
+# $VaultShaFile = "$VaultZip.sha256"
+# $VaultSha256  = "<expected_sha256_hex>"
 
-# --- Paths ---
-$HomeDir = $env:USERPROFILE
-$K8sDir  = Join-Path $HomeDir 'k8s'
-$KubectlPath = Join-Path $K8sDir 'kubectl.exe'
-$VaultZip = Join-Path $env:TEMP ("vault_{0}_windows_amd64.zip" -f $VaultVersion)
-$VaultSha = Join-Path $env:TEMP ("vault_{0}_SHA256SUMS" -f $VaultVersion)
+# Root install dir (keep previous installs under here)
+# (Assumes you already set $K8sDir elsewhere; if not, uncomment next line)
+# $K8sDir = "$HOME\k8s"
+New-Item -ItemType Directory -Path $K8sDir -Force | Out-Null
 
-function Stop-Here($Message, [int]$Code = 1) {
-  Write-Error $Message
-  exit $Code   # use 'return' instead of 'exit' if you do NOT want to close the host
+# Destination subfolder per install (keeps prior installs)
+# Prefer a version-based folder; fall back to timestamp if missing
+$releaseTag = $VaultVersion
+if ([string]::IsNullOrWhiteSpace($releaseTag)) { $releaseTag = Get-Date -Format 'yyyyMMdd-HHmmss' }
+$DestDir = Join-Path $K8sDir "vault_$releaseTag"
+New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+
+# ------------------- Helpers -------------------
+function Invoke-DownloadWithRetry {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Uri,
+        [Parameter(Mandatory)]
+        [string] $OutFile,
+        [int] $Retries = 3,
+        [int] $DelaySec = 3
+    )
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            Write-Host "Downloading ($i/$Retries): $Uri -> $OutFile"
+            # Ensure target folder exists
+            New-Item -ItemType Directory -Force -Path (Split-Path $OutFile -Parent) | Out-Null
+
+            $wc = New-Object System.Net.WebClient
+            # Helpful UA for some CDNs
+            $wc.Headers.Add("User-Agent", "Mozilla/5.0 PowerShell")
+            $wc.DownloadFile($Uri, $OutFile)
+            Remove-Variable wc -ErrorAction SilentlyContinue
+
+            if (!(Test-Path $OutFile)) { throw "Download reported success, but file not found: $OutFile" }
+            $fi = Get-Item $OutFile
+            if ($fi.Length -lt 1024) { throw "Downloaded file is suspiciously small ($($fi.Length) bytes): $OutFile" }
+
+            return $true
+        } catch {
+            if ($i -eq $Retries) { throw }
+            Start-Sleep -Seconds $DelaySec
+        }
+    }
 }
 
-# Ensure dir exists
-if (-not (Test-Path $K8sDir)) { New-Item -ItemType Directory -Path $K8sDir | Out-Null }
+function Test-FileSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+        [string] $ExpectedSha256,   # hex string
+        [string] $ShaFilePath       # optional *.sha256 file path
+    )
+    if (!(Test-Path $Path)) { throw "Cannot hash missing file: $Path" }
 
-# --- kubectl download & verify ---
-Write-Host "Downloading kubectl $KubectlVersion..."
-$kubectlUrl = "https://dl.k8s.io/release/$KubectlVersion/bin/windows/amd64/kubectl.exe"
-$kubectlShaUrl = "$kubectlUrl.sha256"
+    if ($ShaFilePath -and (Test-Path $ShaFilePath)) {
+        # Parse "<sha>  filename" or just "<sha>"
+        $line = (Get-Content -Raw -Path $ShaFilePath).Trim()
+        $parts = $line -split '\s+'
+        if ($parts[0]) { $ExpectedSha256 = $parts[0] }
+    }
 
-try {
-  Invoke-WebRequest -Uri $kubectlUrl -OutFile $KubectlPath -UseBasicParsing
-
-  # Corrected line: Convert content to string (UTF8) before trimming
-  $expectedKubectlSha = [System.Text.Encoding]::UTF8.GetString((Invoke-WebRequest -Uri $kubectlShaUrl -UseBasicParsing).Content).Trim()
-
-} catch {
-  Stop-Here "Failed to download kubectl or its checksum: $($_.Exception.Message)"
+    if (-not $ExpectedSha256) { return $true } # nothing to verify
+    $hash = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    return ($hash -eq $ExpectedSha256.ToLowerInvariant())
 }
 
-# Compute local SHA256
-$localKubectlSha = (Get-FileHash -Path $KubectlPath -Algorithm SHA256).Hash.ToLower()
-if ($localKubectlSha -ne $expectedKubectlSha.ToLower()) {
-  Remove-Item $KubectlPath -Force -ErrorAction SilentlyContinue
-  Stop-Here "kubectl SHA256 mismatch! expected=$expectedKubectlSha got=$localKubectlSha"
+function Extract-Zip {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ZipPath,
+        [Parameter(Mandatory)]
+        [string] $TargetDir
+    )
+    if (!(Test-Path $ZipPath))   { throw "Zip not found: $ZipPath" }
+    if (!(Test-Path $TargetDir)) { New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    # Try 3-arg overload (Encoding) first for filename safety; fallback to 2-arg for PS 5.1 environments
+    try {
+        [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $TargetDir, [System.Text.Encoding]::UTF8)
+    } catch {
+        [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $TargetDir)
+    }
 }
-Write-Host "✅ kubectl checksum verification PASSED"
+# ------------------- Workflow -------------------
 
-# Assuming $VaultZip is the path to your zip file and $K8sDir is the destination directory
-# First, ensure the destination directory exists (if not, create it)
-if (-not (Test-Path $K8sDir)) {
-    New-Item -Path $K8sDir -ItemType Directory | Out-Null
-}
-
-# If the intent is to overwrite existing files, delete the directory contents first
-# This replaces the need for an 'overwriteFiles' parameter
-if (Test-Path $K8sDir) {
-    Remove-Item -Path "$K8sDir\*" -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# Now, extract the zip file.
-# We remove the problematic third argument ($true) and rely on the manual deletion above.
-[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir)
-
-# --- Vault download & verify ---
-Write-Host "Downloading HashiCorp Vault $VaultVersion..."
-$vaultUrl = "https://releases.hashicorp.com/vault/$VaultVersion/vault_${VaultVersion}_windows_amd64.zip"
-$shaUrl   = "https://releases.hashicorp.com/vault/$VaultVersion/vault_${VaultVersion}_SHA256SUMS"
-
-try {
-  Invoke-WebRequest -Uri $vaultUrl -OutFile $VaultZip -UseBasicParsing
-  Invoke-WebRequest -Uri $shaUrl -OutFile $VaultSha -UseBasicParsing
-} catch {
-  Stop-Here "Failed to download Vault or checksums: $($_.Exception.Message)"
-}
-
-# Extract expected SHA for the specific zip filename
-$targetFile = "vault_${VaultVersion}_windows_amd64.zip"
-$expectedVaultSha = (Select-String -Path $VaultSha -Pattern "([a-fA-F0-9]{64})\s+\*?$([regex]::Escape($targetFile))").Matches.Value.Split()[0]
-if (-not $expectedVaultSha) { Stop-Here "Could not find expected SHA for $targetFile in SHA256SUMS." }
-
-# Compute local SHA and compare
-$localVaultSha = (Get-FileHash -Path $VaultZip -Algorithm SHA256).Hash.ToLower()
-if ($localVaultSha -ne $expectedVaultSha.ToLower()) {
-  Remove-Item $VaultZip -Force -ErrorAction SilentlyContinue
-  Stop-Here "Vault SHA256 mismatch! expected=$expectedVaultSha got=$localVaultSha"
-}
-Write-Host "✅ Vault checksum verification PASSED"
-
-# Unzip Vault binary to $K8sDir
-if (Test-Path $K8sDir) {
-    Remove-Item -Recurse -Force $K8sDir
-}
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir)
-# Clean up temp files
-Remove-Item $VaultZip, $VaultSha -Force -ErrorAction SilentlyContinue
-
-# --- PATH (avoid duplicates) ---
-$existingUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($existingUserPath -notmatch [regex]::Escape($K8sDir)) {
-  [Environment]::SetEnvironmentVariable('Path', "$existingUserPath;$K8sDir", 'User')
-  Write-Host "Added $K8sDir to the user PATH. Open a new terminal to pick it up."
+# 1) Download (with retries)
+if (!(Test-Path $VaultZip)) {
+    Invoke-DownloadWithRetry -Uri $VaultUrl -OutFile $VaultZip -Retries 3 -DelaySec 3
 } else {
-  Write-Host "$K8sDir already on the user PATH."
+    Write-Host "Using existing zip: $VaultZip"
 }
 
-# Make the tools available in the current session immediately
-$env:Path = "$env:Path;$K8sDir"
+# 2) Verify presence (explicit check prevents your old error)
+if (!(Test-Path $VaultZip)) {
+    throw "Vault zip not found after download attempt: $VaultZip"
+}
 
-# --- Smoke tests (non-fatal) ---
-Write-Host "kubectl version (client):"
-try { & $KubectlPath version --client --output=yaml | Select-Object -First 8 | ForEach-Object { $_ } } catch { Write-Warning $_ }
-Write-Host "vault version:"
-try { & (Join-Path $K8sDir 'vault.exe') --version } catch { Write-Warning $_ }
+# 3) Optional: verify SHA256 (if you have either $VaultSha256 or a sidecar sha file)
+$ok = $true
+try {
+    $ok = Test-FileSha256 -Path $VaultZip -ExpectedSha256 $VaultSha256 -ShaFilePath $VaultShaFile
+} catch { throw }
+if (-not $ok) {
+    Remove-Item $VaultZip -Force -ErrorAction SilentlyContinue
+    throw "SHA256 verification failed for $VaultZip"
+}
 
-Write-Host "Done."
+# 4) Extract (to versioned folder; prior installs retained)
+Extract-Zip -ZipPath $VaultZip -TargetDir $DestDir
+
+# 5) (Optional) Update a 'current' junction to this version
+$currentLink = Join-Path $K8sDir "current"
+if (Test-Path $currentLink) { Remove-Item $currentLink -Force }
+New-Item -ItemType Junction -Path $currentLink -Target $DestDir | Out-Null
+
+# 6) Clean up only temp artifacts you don't need
+#    (If you prefer to keep the zip for auditing, comment the next line)
+Remove-Item $VaultZip, $VaultShaFile -Force -ErrorAction SilentlyContinue
+
+Write-Host "Vault installed to: $DestDir"
+Write-Host "current -> $DestDir"
