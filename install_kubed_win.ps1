@@ -85,6 +85,9 @@ if ($localVaultSha -ne $expectedVaultSha.ToLower()) {
 Write-Host "✅ Vault checksum verification PASSED"
 
 # Unzip Vault binary to $K8sDir
+if (Test-Path $K8sDir) {
+    Remove-Item -Recurse -Force $K8sDir
+}
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::ExtractToDirectory($VaultZip, $K8sDir)
 # Clean up temp files
