@@ -1,3 +1,36 @@
+# --------- SAFE DEFAULTS & VALIDATION ---------
+# If $K8sDir not provided, default to %USERPROFILE%\k8s (robust on WinPS 5.1 & PS7)
+if (-not $K8sDir -or [string]::IsNullOrWhiteSpace($K8sDir)) {
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+    if ([string]::IsNullOrWhiteSpace($userHome)) {
+        throw "Cannot determine user profile folder; please set `$K8sDir explicitly."
+    }
+    $K8sDir = Join-Path $userHome 'k8s'
+}
+
+# Ensure the root exists
+New-Item -ItemType Directory -Path $K8sDir -Force | Out-Null
+
+# Helper: remove only if path is non-empty and exists
+function Remove-IfExists {
+    param([Parameter(Mandatory=$true)][string[]]$Paths)
+    foreach ($p in $Paths) {
+        if ($p -and -not [string]::IsNullOrWhiteSpace($p) -and (Test-Path $p)) {
+            Remove-Item $p -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# Helper: join paths safely (throws early if base is null/empty)
+function Join-PathSafe {
+    param(
+        [Parameter(Mandatory=$true)][string]$Base,
+        [Parameter(Mandatory=$true)][string]$Child
+    )
+    if ([string]::IsNullOrWhiteSpace($Base)) { throw "Base path is null/empty when joining '$Child'." }
+    return (Join-Path $Base $Child)
+}
+
 # ------------------- Config -------------------
 $VaultVersion = "1.16.3"                                # set/override if your script already defines it
 $VaultFile    = "vault_${VaultVersion}_windows_amd64.zip"
